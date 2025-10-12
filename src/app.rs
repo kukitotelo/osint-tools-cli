@@ -1,145 +1,205 @@
-use crate::menu::MenuItem;
-use crate::menu_list::MenuList;
-use color_eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-    style::{Modifier, Style},
-    widgets::{Block, Borders, List, ListItem},
-    Frame,
-    layout::{Constraint, Direction, Layout},
+use crate::{
+    action::Action,
+    components::{
+        category_list::CategoryList,
+        preview_panel::PreviewPanel,
+        search_bar::SearchBar,
+        Component
+    },
 };
+use color_eyre::Result;
+use crossterm::event::KeyEvent;
+use ratatui::{prelude::*};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-// App構造体
 pub struct App {
-    pub should_exit: bool,
-    pub menu_list: MenuList,
-    pub menu_stack: Vec<Vec<MenuItem>>,
+    should_quit: bool,
+    action_tx: UnboundedSender<Action>,
+    action_rx: UnboundedReceiver<Action>,
+
+    // Components
+    category_list: CategoryList,
+    preview_panel: PreviewPanel,
+    search_bar: SearchBar,
+
+    // UI state
+    focus: Focus,
 }
 
-// App構造体のデフォルト値を定義
-impl Default for App {
-    fn default() -> Self {
-        Self {
-            should_exit: false,
-            menu_list: MenuList::default(),
-            menu_stack: Vec::new(),
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Focus {
+    CategoryList,
+    SearchBar,
 }
 
-// App構造体に関連するメソッドを定義
 impl App {
-    // アプリケーションを実行する
-    pub fn run(mut self, mut terminal: Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
-        while !self.should_exit {
-            terminal.draw(|frame| self.render(frame))?;
-            if let Event::Key(key) = event::read()? {
-                self.handle_key(key);
+    pub fn new() -> Result<Self> {
+        let (action_tx, action_rx) = mpsc::unbounded_channel();
+
+        let mut category_list = CategoryList::new();
+        let mut preview_panel = PreviewPanel::new();
+        let mut search_bar = SearchBar::new();
+
+        // Register action handlers
+        category_list.register_action_handler(action_tx.clone())?;
+        preview_panel.register_action_handler(action_tx.clone())?;
+        search_bar.register_action_handler(action_tx.clone())?;
+
+        Ok(Self {
+            should_quit: false,
+            action_tx,
+            action_rx,
+            category_list,
+            preview_panel,
+            search_bar,
+            focus: Focus::CategoryList,
+        })
+    }
+
+    pub async fn run(&mut self) -> Result<()> {
+        let mut tui = crate::tui::Tui::new()?;
+        tui.enter()?;
+
+        loop {
+            if let Some(e) = tui.next().await {
+                match e {
+                    crate::tui::Event::Quit => self.should_quit = true,
+                    crate::tui::Event::Key(key) => {
+                        self.handle_key_events(key)?;
+                    }
+                    crate::tui::Event::Render => {
+                        tui.draw(|f| {
+                            let _ = self.draw(f);
+                        })?;
+                    }
+                    _ => {}
+                }
+
+                // Process action queue
+                while let Ok(action) = self.action_rx.try_recv() {
+                    match action {
+                        Action::Quit => self.should_quit = true,
+                        Action::OpenTool(url) => {
+                            // Open tool in browser
+                            if let Err(e) = Self::open_url_in_browser(&url) {
+                                log::error!("Failed to open URL {}: {}", url, e);
+                            }
+                        }
+                        _ => {
+                            // Handle actions for each component
+                            self.category_list.update(action.clone())?;
+                            self.preview_panel.update(action.clone())?;
+                            self.search_bar.update(action.clone())?;
+                        }
+                    }
+                }
+
+                if self.should_quit {
+                    tui.stop()?;
+                    break;
+                }
             }
         }
+        tui.exit()?;
         Ok(())
     }
 
-    // キー入力を処理する
-    fn handle_key(&mut self, key: KeyEvent) {
-        if key.kind != KeyEventKind::Press {
-            return;
-        }
-        match key.code {
-            // 終了キーを処理する(キー: q, Esc)
-            KeyCode::Char('q') | KeyCode::Esc => self.handle_exit_key(),
-            // 左キーを処理する(キー: h, Left)
-            KeyCode::Char('h') | KeyCode::Left => self.handle_left_key(),
-            // 下キーを処理する(キー: j, Down)
-            KeyCode::Down | KeyCode::Char('j') => self.menu_list.state.select_next(),
-            // 上キーを処理する(キー: k, Up)
-            KeyCode::Up | KeyCode::Char('k') => self.menu_list.state.select_previous(),
-            // Enterキーを処理する(キー: Enter)
-            KeyCode::Enter => self.handle_enter_key(),
-            // その他のキーは無視する
-            _ => {}
-        }
-    }
-
-    // 終了キーを処理する(キー: q, Esc)
-    fn handle_exit_key(&mut self) {
-        if self.menu_stack.is_empty() {
-            self.should_exit = true;
-        } else {
-            if let Some(previous_menu) = self.menu_stack.pop() {
-                self.menu_list.items = previous_menu;
-                self.menu_list.state.select(Some(0));
-            }
-        }
-    }
-
-    // 左キーを処理する(キー: h, Left)
-    fn handle_left_key(&mut self) {
-        if let Some(previous_menu) = self.menu_stack.pop() {
-            self.menu_list.items = previous_menu;
-            self.menu_list.state.select(Some(0));
-        }
-    }
-
-    // Enterキーを処理する(キー: Enter)
-    fn handle_enter_key(&mut self) {
-        if let Some(selected) = self.menu_list.state.selected() {
-            let selected_item = &self.menu_list.items[selected];
-            match selected_item {
-                MenuItem::Exit => self.should_exit = true,
-                MenuItem::MapsGeolocationTransport(submenu) => {
-                    if !submenu.is_empty() {
-                        self.menu_stack.push(self.menu_list.items.clone());
-                        self.menu_list.items = submenu.clone();
-                        self.menu_list.state.select(Some(0));
-                    }
-                },
-                _ => {}
-            }
-        }
-    }
-
-    // フレームを描画する
-    fn render(&mut self, frame: &mut Frame) {
-        // レイアウトを作成
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
+    fn draw(&mut self, frame: &mut Frame) -> Result<()> {
+        let main_layout = Layout::default()
+            .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
+                Constraint::Length(3), // Search bar
+                Constraint::Min(0),    // Main content
             ])
             .split(frame.area());
 
-        // メインメニューを描画
-        let items: Vec<ListItem> = self.menu_list.items
-            .iter()
-            .map(|item| ListItem::new(item.to_str()))
-            .collect();
+        // Render search bar
+        self.search_bar.draw(frame, main_layout[0])?;
 
-        // メインメニューのリストを作成
-        let main_menu = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("OSINT Tools CLI"))
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        // Split main content into two columns
+        let content_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50), // Category list
+                Constraint::Percentage(50), // Preview panel
+            ])
+            .split(main_layout[1]);
 
-        // メインメニューを描画
-        frame.render_stateful_widget(main_menu, chunks[0], &mut self.menu_list.state);
+        // Render category list
+        self.category_list.draw(frame, content_layout[0])?;
 
-        // プレビューを描画
-        if let Some(selected) = self.menu_list.state.selected() {
-            if let MenuItem::MapsGeolocationTransport(submenu) = &self.menu_list.items[selected] {
-                let preview_items: Vec<ListItem> = submenu
-                    .iter()
-                    .map(|item| ListItem::new(item.to_str()))
-                    .collect();
+        // Render preview panel with selected category
+        let selected_category = self.category_list.selected_category();
+        self.preview_panel.draw_with_category(frame, content_layout[1], selected_category)?;
 
-                let preview = List::new(preview_items)
-                    .block(Block::default().borders(Borders::ALL).title("Preview"))
-                    .highlight_style(Style::default().add_modifier(Modifier::DIM));
-
-                frame.render_widget(preview, chunks[1]);
+        // Draw focus indicator
+        match self.focus {
+            Focus::CategoryList => {
+                let _focused_area = content_layout[0];
+                // Add focus styling if needed
+            }
+            Focus::SearchBar => {
+                let _focused_area = main_layout[0];
+                // Add focus styling if needed
             }
         }
+
+        Ok(())
+    }
+
+    pub fn handle_key_events(&mut self, key: KeyEvent) -> Result<()> {
+        match self.focus {
+            Focus::CategoryList => {
+                if let Some(action) = self.category_list.handle_key_events(key)? {
+                    self.action_tx.send(action)?;
+                }
+            }
+            Focus::SearchBar => {
+                if let Some(action) = self.search_bar.handle_key_events(key)? {
+                    self.action_tx.send(action)?;
+                }
+            }
+        }
+
+        // Handle global key events
+        match key.code {
+            crossterm::event::KeyCode::Char('/') => {
+                self.focus = Focus::SearchBar;
+                self.search_bar.activate();
+            }
+            crossterm::event::KeyCode::Esc => {
+                self.focus = Focus::CategoryList;
+                self.search_bar.deactivate();
+            }
+            crossterm::event::KeyCode::Char('q') => {
+                self.action_tx.send(Action::Quit)?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn open_url_in_browser(url: &str) -> Result<()> {
+        let command = if cfg!(target_os = "windows") {
+            "cmd"
+        } else if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+
+        let args = if cfg!(target_os = "windows") {
+            vec!["/C", "start", url]
+        } else {
+            vec![url]
+        };
+
+        std::process::Command::new(command)
+            .args(&args)
+            .spawn()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to open browser: {}", e))?;
+
+        Ok(())
     }
 }
