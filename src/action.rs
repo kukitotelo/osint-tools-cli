@@ -6,12 +6,8 @@ pub enum Action {
     Tick,
     Render,
     Resize(u16, u16),
-    Suspend,
-    Resume,
     Quit,
-    Refresh,
     Error(String),
-    Help,
 
     // Navigation actions
     Up,
@@ -23,9 +19,6 @@ pub enum Action {
     Home,
 
     // Menu-specific actions
-    SelectCategory,
     ShowPreview,
     OpenTool(String), // URL to open
-    SearchTool,
-    FilterCategory,
 }

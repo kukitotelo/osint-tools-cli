@@ -3,7 +3,6 @@ use crate::{
     components::{
         category_list::CategoryList,
         preview_panel::PreviewPanel,
-        search_bar::SearchBar,
         Component
     },
 };
@@ -20,7 +19,6 @@ pub struct App {
     // Components
     category_list: CategoryList,
     preview_panel: PreviewPanel,
-    search_bar: SearchBar,
 
     // UI state
     focus: Focus,
@@ -29,7 +27,6 @@ pub struct App {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
     CategoryList,
-    SearchBar,
 }
 
 impl App {
@@ -38,12 +35,9 @@ impl App {
 
         let mut category_list = CategoryList::new();
         let mut preview_panel = PreviewPanel::new();
-        let mut search_bar = SearchBar::new();
-
         // Register action handlers
         category_list.register_action_handler(action_tx.clone())?;
         preview_panel.register_action_handler(action_tx.clone())?;
-        search_bar.register_action_handler(action_tx.clone())?;
 
         Ok(Self {
             should_quit: false,
@@ -51,7 +45,6 @@ impl App {
             action_rx,
             category_list,
             preview_panel,
-            search_bar,
             focus: Focus::CategoryList,
         })
     }
@@ -89,7 +82,6 @@ impl App {
                             // Handle actions for each component
                             self.category_list.update(action.clone())?;
                             self.preview_panel.update(action.clone())?;
-                            self.search_bar.update(action.clone())?;
                         }
                     }
                 }
@@ -105,17 +97,6 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<()> {
-        let main_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Search bar
-                Constraint::Min(0),    // Main content
-            ])
-            .split(frame.area());
-
-        // Render search bar
-        self.search_bar.draw(frame, main_layout[0])?;
-
         // Split main content into two columns
         let content_layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -123,7 +104,7 @@ impl App {
                 Constraint::Percentage(50), // Category list
                 Constraint::Percentage(50), // Preview panel
             ])
-            .split(main_layout[1]);
+            .split(frame.area());
 
         // Render category list
         self.category_list.draw(frame, content_layout[0])?;
@@ -138,10 +119,6 @@ impl App {
                 let _focused_area = content_layout[0];
                 // Add focus styling if needed
             }
-            Focus::SearchBar => {
-                let _focused_area = main_layout[0];
-                // Add focus styling if needed
-            }
         }
 
         Ok(())
@@ -154,23 +131,10 @@ impl App {
                     self.action_tx.send(action)?;
                 }
             }
-            Focus::SearchBar => {
-                if let Some(action) = self.search_bar.handle_key_events(key)? {
-                    self.action_tx.send(action)?;
-                }
-            }
         }
 
         // Handle global key events
         match key.code {
-            crossterm::event::KeyCode::Char('/') => {
-                self.focus = Focus::SearchBar;
-                self.search_bar.activate();
-            }
-            crossterm::event::KeyCode::Esc => {
-                self.focus = Focus::CategoryList;
-                self.search_bar.deactivate();
-            }
             crossterm::event::KeyCode::Char('q') => {
                 self.action_tx.send(Action::Quit)?;
             }

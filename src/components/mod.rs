@@ -1,6 +1,5 @@
 pub mod category_list;
 pub mod preview_panel;
-pub mod search_bar;
 
 use crate::action::Action;
 use color_eyre::Result;

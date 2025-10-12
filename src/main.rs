@@ -3,7 +3,6 @@ use color_eyre::Result;
 mod action;
 mod app;
 mod components;
-mod config;
 mod models;
 mod tui;
 
