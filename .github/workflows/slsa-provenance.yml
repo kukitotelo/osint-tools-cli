@@ -1,0 +1,62 @@
+name: SLSA Provenance - Generic Generator
+
+on:
+  release:
+    types: [published]          # Corre al publicar una release (recomendado)
+  workflow_dispatch:            # Para pruebas manuales desde Actions tab
+
+permissions:
+  contents: read
+  id-token: write               # Obligatorio para firmar provenance con OIDC
+  actions: read                 # Para introspección del workflow
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      base64_subjects: ${{ steps.hash.outputs.base64_subjects }}
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # Necesario para tags y history en provenance
+
+      - name: Instalar Rust (rustup)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source "$HOME/.cargo/env"
+
+      - name: Build artifact (release mode)
+        run: |
+          cargo build --release
+          # Copia tu binario principal como artifact (cambia el nombre si es diferente)
+          cp target/release/TU_BINARIO ./mi-artifact.bin
+          # Genera SHA256 para subjects (obligatorio)
+          sha256sum mi-artifact.bin | base64 -w0 > subjects.txt
+
+      - name: Preparar base64 subjects
+        id: hash
+        run: |
+          echo "base64_subjects=$(cat subjects.txt)" >> "$GITHUB_OUTPUT"
+
+      # Opcional: sube artifact para descargar después
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifact
+          path: mi-artifact.bin
+
+  provenance:
+    needs: [build]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write             # Necesario si subes provenance a release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generar SLSA Provenance (Generic L3)
+        uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+        with:
+          base64-subjects: "${{ needs.build.outputs.base64_subjects }}"
+          upload-assets: true         # Sube provenance como asset a la release (recomendado)
+          provenance-name: provenance.intoto.jsonl  # Nombre del archivo generado
